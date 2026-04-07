@@ -133,6 +133,11 @@ class PurePursuitPlanner(PathPlanner):
             if math.hypot(wx - x, wy - y) >= self._lookahead:
                 return wx, wy
         return waypoints[-1]
+    
+    def CurrentTargetReached(self, target_x, target_y, x, y):
+        dist_to_target = np.hypot(target_x - x, target_y - y)
+        return dist_to_target < self.goal_tolerance
+
 
 
 class PurePursuitPlanner2(PathPlanner):
@@ -153,7 +158,7 @@ class PurePursuitPlanner2(PathPlanner):
         goal_x, goal_y = path[-1]
         dist_to_goal = np.hypot(goal_x - x, goal_y - y)
         return dist_to_goal < self.goal_tolerance
-
+        
     def compute_velocity(self, path, pose):
         x, y, theta = pose
         goal_x, goal_y = path[-1]
