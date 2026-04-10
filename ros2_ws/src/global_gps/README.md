@@ -60,8 +60,11 @@ float32 theta    # heading (radians, CCW from world X)
    ```bash
    curl -fsSL https://get.docker.com -o get-docker.sh
    sudo sh get-docker.sh
+   # JetPack may not create the docker group automatically — create it if missing:
+   sudo groupadd docker 2>/dev/null || true
    sudo usermod -aG docker $USER
    newgrp docker
+   docker --version
    ```
 3. Clone your fork of the repository:
    ```bash
