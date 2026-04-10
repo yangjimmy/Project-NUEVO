@@ -190,6 +190,7 @@ secrets/
 *.tmp
 temp/
 tmp/
+build/
 get-docker.sh
 
 # Compressed files (keep intentional archives, ignore temp)
