@@ -96,7 +96,46 @@ def _drive_straight(robot: Robot, rec: _Record) -> None:
     """Drive forward until DRIVE_DISTANCE_MM is reached, recording every tick."""
     period = 1.0 / float(DEFAULT_FSM_HZ)
 
-    robot.set_state(FirmwareState.RUNNING)
+    # ── Prerequisite: bridge must be running ─────────────────────────────────
+    _SERVICE_WAIT_S = 10.0
+    if not robot._set_state_client.wait_for_service(timeout_sec=_SERVICE_WAIT_S):
+        raise RuntimeError(
+            f"[position_test] /set_firmware_state service not available after "
+            f"{_SERVICE_WAIT_S:.0f}s. Start the bridge first:\n"
+            "  ros2 run bridge bridge"
+        )
+
+    # ── Wait for firmware to leave INIT (state 0) ────────────────────────────
+    _IDLE_WAIT_S = 10.0
+    _t0 = time.monotonic()
+    while robot.get_state() == 0:   # 0 = INIT, not in FirmwareState enum
+        if time.monotonic() - _t0 > _IDLE_WAIT_S:
+            raise RuntimeError(
+                f"[position_test] Firmware still in INIT after {_IDLE_WAIT_S:.0f}s."
+            )
+        time.sleep(0.1)
+
+    # ── If ERROR or ESTOP, reset to IDLE first ───────────────────────────────
+    if robot.get_state() not in (int(FirmwareState.IDLE), int(FirmwareState.RUNNING)):
+        if not robot.set_state(FirmwareState.IDLE):
+            raise RuntimeError(
+                f"[position_test] Could not reset firmware to IDLE "
+                f"(current state: {robot.get_state()})."
+            )
+
+    if not robot.set_state(FirmwareState.RUNNING):
+        # The bridge service may time out before it observes the state echo
+        # (the ROS single-threaded executor blocks its own timer while the
+        # service callback is waiting).  The START command was still sent;
+        # give the bridge timer a moment to flush the decoded queue.
+        _deadline = time.monotonic() + 1.0
+        while robot.get_state() != int(FirmwareState.RUNNING):
+            if time.monotonic() > _deadline:
+                raise RuntimeError(
+                    f"[position_test] Firmware did not reach RUNNING "
+                    f"(state: {robot.get_state()})."
+                )
+            time.sleep(0.05)
     robot.reset_odometry()
     robot.wait_for_pose_update(timeout=1.0)
 

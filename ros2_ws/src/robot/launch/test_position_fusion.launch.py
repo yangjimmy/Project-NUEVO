@@ -1,7 +1,10 @@
 """
 test_position_fusion.launch.py
 ================================
-Starts the robot node using test_position_fusion.py as the run() entry point.
+Starts the position-fusion test node.
+
+Prerequisite — the bridge node must already be running before launching this:
+    ros2 run bridge bridge
 
 The robot will drive in a straight line for DRIVE_DISTANCE_MM, then stop and
 save a position/trajectory plot to ~/position_fusion_test_result.png.

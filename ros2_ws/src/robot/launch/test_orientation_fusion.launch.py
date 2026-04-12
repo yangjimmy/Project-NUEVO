@@ -1,8 +1,10 @@
 """
 test_orientation_fusion.launch.py
 ==================================
-Starts the robot node using test_orientation_fusion.py as the run() entry point
-instead of main.py.
+Starts the orientation-fusion test node.
+
+Prerequisite — the bridge node must already be running before launching this:
+    ros2 run bridge bridge
 
 The robot will drive two circles, then stop and save a trajectory/heading plot
 to ~/fusion_test_result.png.
