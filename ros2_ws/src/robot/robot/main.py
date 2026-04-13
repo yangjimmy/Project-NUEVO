@@ -72,6 +72,7 @@ def run(robot: Robot) -> None:
     state = "INIT"
     drive_handle = None
     period = 1.0 / float(DEFAULT_FSM_HZ)
+    print(f"FSM period: {period:.3f} seconds")
     next_tick = time.monotonic()
 
     while True:
@@ -92,11 +93,11 @@ def run(robot: Robot) -> None:
                 lookahead_mm=300.0,
                 advance_radius_mm=100.0,
                 tolerance_mm=100.0,
-                gains_of_costs=[1.2, 0.3, 0., 0.2, 0.1], # [gain_goal, gain_heading, gain_obs_base, gain_speed, gain_path]
+                gains_of_costs=[1.0, 0.05, 0.1, 0.2, 0.05], # [gain_goal, gain_heading, gain_obs_base, gain_speed, gain_path]
                 period=period,
-                predict_time=2.0,
+                predict_time=1.0,
                 predict_velocity_samples_resolution=[10.0, 0.1],
-                obstacles_range_mm=500.0,
+                obstacles_range_mm=1000.0,
                 ttc_weight=0.1,
             )
             print("Path is ready, Entering IDLE state.")
@@ -113,7 +114,9 @@ def run(robot: Robot) -> None:
 
         elif state == "MOVING":
             show_moving_leds(robot)
-            robot._draw_lidar_obstacles()
+            # if next_tick % 0.5 < period: # print every half second
+            #     robot._draw_lidar_obstacles()
+            #     print("Obstacle figure updated.")
             state = robot._nav_follow_path_loop(path, period)
 
         # FSM refresh rate control

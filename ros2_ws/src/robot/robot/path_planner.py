@@ -261,6 +261,7 @@ class DWAPlanner():
         for i, point in enumerate(traj):
             dists = np.linalg.norm(obstacles - point[:2], axis=1)
             # min_dist = min(min_dist, np.min(dists))
+            ttc = self.predict_time
             if np.min(dists) < min_dist:
                 min_dist = np.min(dists)
                 ttc = i * self.dt # time-to-collision
@@ -269,24 +270,21 @@ class DWAPlanner():
                 return float('inf'), min_dist # If the minimum distance to an obstacle is less than or equal to the robot's radius, return infinite cost to indicate a collision risk
 
         min_dist /= 1000
-        # return 1.0 / (min_dist + ttc * self.ttc_weight + 1e-5), min_dist # cost is inversely proportional to the minimum distance to obstacles
-        sigma = 0.1
-        # BUG (uninitialized ttc): ttc is only assigned inside `if np.min(dists) < min_dist`.
-        # If traj is empty (predict_time=0 or dt=0 at startup), the loop never runs and
-        # ttc is undefined here → UnboundLocalError.  Fix: initialize ttc = 0.0 before the loop.
-        return np.exp(- ((min_dist + ttc * self.ttc_weight) ** 2) / (2 * sigma ** 2)), min_dist # Gaussian obstacle cost
+        return 1.0 / (min_dist + ttc * self.ttc_weight + 1e-5), min_dist # cost is inversely proportional to the minimum distance to obstacles
+        # sigma = 1.0
+        # return np.exp(- ((min_dist + ttc * self.ttc_weight) ** 2) / (2 * sigma ** 2)), min_dist # Gaussian obstacle cost
 
     def calc_path_cost(self, traj, path):
         distances = [np.min(np.linalg.norm(path - p[:2], axis=1)) for p in traj]
         return np.mean(distances) / 1000
 
-    def obstacle_activation(self, dist):
-        if dist > self.obstacles_range:
-            return 0.0
-        elif dist > self.obstacles_range / 2:
-            return 0.5
-        else:
-            return 1.0
+    # def obstacle_activation(self, dist):
+    #     if dist > self.obstacles_range:
+    #         return 0.0
+    #     elif dist > self.obstacles_range / 2:
+    #         return 0.5
+    #     else:
+    #         return 1.0
 
     def pure_velocity_search(self, pose, obstacles):
         best_u_when_blocked = [0., 0.]
@@ -308,18 +306,18 @@ class DWAPlanner():
         x, y, theta = pose
         if len(obstacles) > 0:
             # lidar orientation due to installation is 180 deg rotated from robot forward, so rotate obstacles accordingly
-            obstacles = (np.array([[np.cos(np.pi), -np.sin(np.pi)], [np.sin(np.pi), np.cos(np.pi)]]) @ obstacles.T).T
+            # there is a distance between the lidar and the robot center.
+            lidar_offset_mm = 100.0
+            obstacles = (np.array([[np.cos(np.pi), -np.sin(np.pi)], [np.sin(np.pi), np.cos(np.pi)]]) @ obstacles.T).T + np.array([[lidar_offset_mm, 0],])
             # since some robot parts (e.g., the arm) may cause obstacles to be detected, we can filter out those obstacles behind the lidar.
-            # obstacles = obstacles[obstacles[:,0] > 0,:]
+            obstacles = obstacles[obstacles[:,0] > 0,:]
             # transform obstacles from robot frame to world frame.
             obstacles = (np.array([[np.cos(theta), -np.sin(theta)], [np.sin(theta), np.cos(theta)]]) @ obstacles.T).T + np.array([[x, y],])
-            obstacles = obstacles[np.linalg.norm(obstacles-np.float64([[x, y]]), axis=1)<self.obstacles_range,:]
-            # BUG (initial best_cost = inf): only an upper-bound filter is applied here.
-            # Lidar points on the robot's own body (arm, chassis) survive this filter and land
-            # within robot_radius of the robot center.  calc_obstacle_cost then returns inf for
-            # every predicted trajectory because the robot "starts inside" those points, so all
-            # (v, w) samples get cost=inf and best_cost remains float('inf') — especially bad on
-            # the very first call when the dynamic window is narrow (velocity=0).
+            dists = np.linalg.norm(obstacles-np.float64([[x, y]]), axis=1)
+            obstacles = obstacles[dists<self.obstacles_range,:]
+
+            # print(f"Min distance: {np.min(dists):.4f}")
+
             # Fix: also filter obstacles closer than robot_radius, i.e.:
             #   dist = np.linalg.norm(obstacles - [[x,y]], axis=1)
             #   obstacles = obstacles[(dist >= robot_radius) & (dist < obstacles_range)]
@@ -355,7 +353,7 @@ class DWAPlanner():
                 #     best_min_dist = min_dist
                 #     best_u_when_blocked = [v, w]
 
-                obs_weight = self.gain_obs_base * self.obstacle_activation(min_dist) # according to the minimum distance to obstacles along the predicted trajectory, dynamically adjust the weight of the obstacle cost, increasing it as the robot gets closer to obstacles to prioritize safety in tight spaces while allowing more aggressive navigation when obstacles are farther away
+                obs_weight = self.gain_obs_base # * self.obstacle_activation(min_dist) # according to the minimum distance to obstacles along the predicted trajectory, dynamically adjust the weight of the obstacle cost, increasing it as the robot gets closer to obstacles to prioritize safety in tight spaces while allowing more aggressive navigation when obstacles are farther away
 
                 cost = (
                     self.gain_goal * goal_cost +
@@ -370,7 +368,7 @@ class DWAPlanner():
                     best_u = [v, w]
 
         best_v, best_w = best_u
-        print(f"Obstacle gain: {self.gain_obs_base:.4f}, Best cost: {best_cost:.4f}")
+        # print(f"Best cost: {best_cost:.4f}")
         if best_cost == float('inf') or (abs(best_v) < (0.01 * 1000) and abs(best_w) < 0.05):
             # return best_u_when_blocked[0], best_u_when_blocked[1]   # rotate in place
             return self.pure_velocity_search(pose, obstacles)   # rotate in place
