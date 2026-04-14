@@ -86,8 +86,8 @@ def run(robot: Robot) -> None:
             ]
             path = np.float64(densify_polyline(path_control_points, spacing=500.0))
             robot._nav_follow_dwa_path(
-                max_vel_mm=400.0,
-                max_acc_mm=600.0,
+                max_vel_mm=100.0,
+                max_acc_mm=300.0,
                 max_angular_rad=1.0,
                 max_angular_acc_rad=1.8,
                 lookahead_mm=300.0,

@@ -257,18 +257,12 @@ class DWAPlanner():
             return 0.0, float('inf')
 
         min_dist = float('inf')
+        ttc = self.predict_time
 
         for i, point in enumerate(traj):
             dists = np.linalg.norm(obstacles - point[:2], axis=1)
             # min_dist = min(min_dist, np.min(dists))
-            # BUG (ttc reset inside loop): ttc is reset to self.predict_time at the
-            # start of every loop iteration.  If the closest approach happened on
-            # iteration k but iteration k+1 does NOT update min_dist, ttc is left as
-            # self.predict_time instead of k*dt.  The final returned ttc is therefore
-            # wrong whenever the minimum-distance point is not the last trajectory step.
-            # Fix: initialize ttc = self.predict_time BEFORE the loop, remove this
-            # line from inside the loop, and only overwrite it inside the if block.
-            ttc = self.predict_time
+
             if np.min(dists) < min_dist:
                 min_dist = np.min(dists)
                 ttc = i * self.dt # time-to-collision
@@ -331,20 +325,9 @@ class DWAPlanner():
             obstacles = (np.array([[np.cos(theta), -np.sin(theta)], [np.sin(theta), np.cos(theta)]]) @ obstacles.T).T + np.array([[x, y],])
             dists = np.linalg.norm(obstacles-np.float64([[x, y]]), axis=1)
             obstacles = obstacles[dists<self.obstacles_range,:]
+            # obstacles = obstacles[(dists >= self.robot_radius) & (dists < self.obstacles_range)]
 
             # print(f"Min distance: {np.min(dists):.4f}")
-
-            # BUG (missing inner distance filter): only an upper-bound range filter is
-            # applied.  Lidar points on the robot's own body that survived the
-            # forward-facing filter (obstacles[:,0] > 0) but are closer than
-            # robot_radius in world frame are not removed.  calc_obstacle_cost then
-            # returns inf for the very first trajectory step because the robot "starts
-            # inside" those self-detected points.  Every (v, w) sample gets cost=inf,
-            # best_u stays [0, 0], and the robot stops or falls through to
-            # pure_velocity_search (which has the same problem).
-            # The primary fix is in _on_lidar: filter out range < msg.range_min so
-            # zero-range readings never enter the pipeline.  A secondary defensive fix
-            # here: obstacles = obstacles[(dists >= self.robot_radius) & (dists < self.obstacles_range)]
         vx, vy, w = velocity
 
         if self.TargetReached(path, x, y):

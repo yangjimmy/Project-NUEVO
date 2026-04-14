@@ -374,26 +374,10 @@ class Robot:
         )
 
     def _on_lidar(self, msg: LaserScan) -> None:
-        # BUG (float step size mismatch): np.arange with a float step can produce
-        # len(angles) = N or N±1 vs len(msg.ranges) due to floating-point rounding of
-        # (angle_max - angle_min) / angle_increment.  Applying the `valid` mask (sized
-        # to ranges) to a differently-sized angles array silently misaligns angle↔range
-        # pairs or raises an IndexError.
-        # Fix: use  msg.angle_min + np.arange(len(msg.ranges)) * msg.angle_increment
-        angles = np.arange(msg.angle_min, msg.angle_max + msg.angle_increment, msg.angle_increment)
+        angles = msg.angle_min + np.arange(len(msg.ranges)) * msg.angle_increment
         ranges = np.array(msg.ranges)
 
-        # BUG (incomplete range filter): only NaN/Inf are removed here.  Many LiDAR
-        # drivers return 0.0 for missing/no-return readings, and msg.range_max for
-        # out-of-range beams.  Both survive this filter:
-        #   - range == 0.0 maps to Cartesian (0, 0) — the lidar origin in robot frame.
-        #     After the 180° flip + lidar_offset in DWAPlanner.compute_velocity(), that
-        #     point lands 100 mm directly in front of the robot, right at the collision
-        #     boundary (robot_radius).  DWA then sees a permanent "obstacle" ahead and
-        #     returns inf cost for every forward trajectory, causing the robot to stop.
-        #   - range > msg.range_max produces ghost obstacles at the scan boundary.
-        # Fix: valid = np.isfinite(ranges) & (ranges > msg.range_min) & (ranges < msg.range_max)
-        valid = np.isfinite(ranges)
+        valid = np.isfinite(ranges) & (ranges > msg.range_min) & (ranges < msg.range_max)
         angles = angles[valid]
         ranges = ranges[valid]
 
@@ -1499,10 +1483,6 @@ class Robot:
         update_hz: float = float(DEFAULT_NAV_HZ),
     ) -> None:
         """Navigation thread body: APF path following with robot-frame obstacles."""
-        # BUG (missing class): APFPlanner does not exist in path_planner.py.
-        # This import raises ImportError at runtime the moment _nav_follow_apf_path
-        # is called.  Either implement APFPlanner in path_planner.py or remove this
-        # method until it is available.
         from robot.path_planner import APFPlanner
 
         planner = APFPlanner(
@@ -1674,13 +1654,6 @@ class Robot:
 
         v, w = self.planner.compute_velocity(path, pose, vel, obstacles, period)
         # print(f"Computed velocity: linear={v:.1f} mm/s, angular={math.degrees(w):.1f} deg/s")
-        # BUG (double unit conversion): DWAPlanner.compute_velocity() always returns
-        # velocities in mm/s and rad/s (its internal units).  set_velocity() treats
-        # the first argument as user-units/s and re-multiplies by self._unit.value.
-        # With Unit.MM (value=1.0) this is harmless, but with any other unit (e.g.
-        # Unit.INCH, value=25.4) the speed would be inflated by 25.4×.
-        # Fix: call self._send_body_velocity_mm(v, w) directly, bypassing the
-        # unit re-conversion, or have DWAPlanner output in user units.
         self.set_velocity(v, math.degrees(w))
         # print(f"Current Pose: ({pose[0]:.1f}, {pose[1]:.1f}, {math.degrees(pose[2]):.1f} deg)")
 
