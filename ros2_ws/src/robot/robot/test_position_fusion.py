@@ -1,14 +1,39 @@
 """
-test_position_fusion.py — GPS-anchored position fusion live test
-================================================================
-Drives the robot in a straight line for a fixed distance, recording raw
-odometry and fused position at every kinematics tick.  After the run,
-matplotlib plots:
-  1. X position over time — raw odometry vs fused
-  2. Y position over time — raw odometry vs fused
-  3. 2D trajectory — raw odometry path vs fused path
-  4. Fused − odometry position error magnitude over time, with GPS-active
-     regions shaded in green
+test_position_fusion.py — GPS-anchored position fusion alpha-tuning test
+=========================================================================
+Purpose
+-------
+Helps students tune ``POS_FUSION_ALPHA`` by driving the robot in a straight
+line along the world +Y axis (the robot's initial forward direction) between
+two marked spots on the floor, both within the GPS (overhead camera) coverage
+area.
+
+Setup
+-----
+1. Mark two spots on the floor separated by ``DRIVE_DISTANCE_MM`` along the
+   +Y axis.  Place the robot on the first spot facing forward (+Y).
+2. Mark the destination spot with an X.
+3. Run the test.  The robot drives to the second spot and stops.
+4. Check the plots:
+   - **Y position over time** — how closely the fused estimate tracks the
+     target distance.  Odometry and fused should both reach DRIVE_DISTANCE_MM;
+     if fused drifts away from the target line the alpha is too low (GPS not
+     pulling enough) or the GPS coverage has a gap.
+   - **X drift over time** — ideally stays near zero.  A large X drift means
+     the robot veered; fused X should correct back toward zero when GPS is
+     active.
+   - **2D bird's-eye trajectory** — the ideal path is a vertical line at X = 0.
+     Deviation shows steering error; the fused path should stay tighter to the
+     ideal than raw odometry when GPS is active.
+   - **Fused − odometry error** — shaded green when GPS is active; error
+     magnitude should rise when GPS drops out and shrink when it returns.
+
+Tuning guide
+------------
+* If the fused path overshoots or oscillates around the GPS fix → lower alpha.
+* If the fused path lags odometry and never fully corrects to the marker → raise alpha.
+* A good starting point is alpha = 0.3–0.5 for 10 Hz GPS; alpha = 1.0 snaps
+  directly to GPS each kinematics tick (useful to verify GPS accuracy in isolation).
 
 The GPS offset must be set before running if the GPS frame origin does not
 coincide with the robot start corner.  Edit GPS_OFFSET_X_MM / GPS_OFFSET_Y_MM
@@ -35,9 +60,9 @@ from robot.hardware_map import DEFAULT_FSM_HZ
 
 # ── Tunable parameters ────────────────────────────────────────────────────────
 
-DRIVE_DISTANCE_MM = 1000.0    # mm — straight-line travel distance
+DRIVE_DISTANCE_MM = 1000.0    # mm — distance between the two marked spots along world +Y
 DRIVE_SPEED_MM_S  = 100.0    # mm/s forward speed
-POS_FUSION_ALPHA  = 1     # GPS weight for complementary filter (0–1)
+POS_FUSION_ALPHA  = 0.3       # GPS weight for complementary filter (0–1); tune this
 
 # GPS frame → arena frame offset (mm).
 # Set these to the measured offset once calibrated; leave at 0 to trigger the
@@ -152,9 +177,10 @@ def _drive_straight(robot: Robot, rec: _Record) -> None:
     odom_y = odom_y0
 
     print(
-        f"[pos_fusion_test] Driving straight {DRIVE_DISTANCE_MM:.0f} mm "
-        f"at {DRIVE_SPEED_MM_S:.0f} mm/s\n"
-        f"[pos_fusion_test] GPS offset: ({GPS_OFFSET_X_MM:.1f}, {GPS_OFFSET_Y_MM:.1f}) mm"
+        f"[pos_fusion_test] Driving +Y {DRIVE_DISTANCE_MM:.0f} mm "
+        f"at {DRIVE_SPEED_MM_S:.0f} mm/s  alpha={POS_FUSION_ALPHA}\n"
+        f"[pos_fusion_test] GPS offset: ({GPS_OFFSET_X_MM:.1f}, {GPS_OFFSET_Y_MM:.1f}) mm\n"
+        f"[pos_fusion_test] Place start marker at robot origin, end marker {DRIVE_DISTANCE_MM:.0f} mm forward."
     )
 
     while True:
@@ -227,62 +253,74 @@ def _plot_results(rec: _Record) -> None:
     except Exception:
         pass
 
-    fig, axes = plt.subplots(2, 2, figsize=(14, 9))
+    # Layout: Y-progress (tall, top-left), 2D bird's-eye (top-right),
+    #         X-drift (bottom-left), error magnitude (bottom-right).
+    fig = plt.figure(figsize=(14, 9))
+    gs  = fig.add_gridspec(2, 2, hspace=0.38, wspace=0.32)
+    ax_y    = fig.add_subplot(gs[0, 0])
+    ax_traj = fig.add_subplot(gs[0, 1])
+    ax_x    = fig.add_subplot(gs[1, 0])
+    ax_err  = fig.add_subplot(gs[1, 1])
+
     fig.suptitle(
-        f"Position fusion test — straight line {DRIVE_DISTANCE_MM:.0f} mm  "
+        f"Position fusion — +Y drive {DRIVE_DISTANCE_MM:.0f} mm  "
         f"(α={POS_FUSION_ALPHA}, offset=({GPS_OFFSET_X_MM:.0f}, {GPS_OFFSET_Y_MM:.0f}) mm)",
         fontsize=12,
     )
     gps_patch = mpatches.Patch(color="green", alpha=0.3, label="GPS active")
 
-    # ── Panel 1: X position over time ─────────────────────────────────────────
-    ax = axes[0, 0]
-    _shade_gps_regions(ax, t, gps_active)
-    ax.plot(t, odom_x,  lw=1.2, color="steelblue", label="Odometry X")
-    ax.plot(t, fused_x, lw=1.5, color="tomato", linestyle="--", label="Fused X")
-    ax.set_xlabel("time (s)")
-    ax.set_ylabel("X position (mm)")
-    ax.set_title("X position over time")
-    ax.legend(handles=[*ax.get_legend_handles_labels()[0][:2], gps_patch], fontsize=8)
-    ax.grid(True, alpha=0.3)
+    # ── Panel 1 (top-left): Y progress — primary tuning view ─────────────────
+    # Driving in world +Y: this is the axis of intended motion.
+    _shade_gps_regions(ax_y, t, gps_active)
+    ax_y.plot(t, odom_y,  lw=1.2, color="steelblue", label="Odometry Y")
+    ax_y.plot(t, fused_y, lw=1.5, color="tomato",    linestyle="--", label="Fused Y")
+    ax_y.axhline(DRIVE_DISTANCE_MM, color="black", lw=1.0, linestyle=":",
+                 label=f"Target ({DRIVE_DISTANCE_MM:.0f} mm)")
+    ax_y.set_xlabel("time (s)")
+    ax_y.set_ylabel("Y position (mm)")
+    ax_y.set_title("Y progress toward target (primary)")
+    ax_y.legend(handles=[*ax_y.get_legend_handles_labels()[0], gps_patch], fontsize=8)
+    ax_y.grid(True, alpha=0.3)
 
-    # ── Panel 2: Y position over time ─────────────────────────────────────────
-    ax = axes[0, 1]
-    _shade_gps_regions(ax, t, gps_active)
-    ax.plot(t, odom_y,  lw=1.2, color="steelblue", label="Odometry Y")
-    ax.plot(t, fused_y, lw=1.5, color="tomato", linestyle="--", label="Fused Y")
-    ax.set_xlabel("time (s)")
-    ax.set_ylabel("Y position (mm)")
-    ax.set_title("Y position over time")
-    ax.legend(handles=[*ax.get_legend_handles_labels()[0][:2], gps_patch], fontsize=8)
-    ax.grid(True, alpha=0.3)
+    # ── Panel 2 (top-right): 2D bird's-eye trajectory ─────────────────────────
+    # Ideal path is a vertical line at X = 0.
+    x_range = max(np.abs(odom_x).max(), np.abs(fused_x).max(), 50.0)
+    ax_traj.axvline(0.0, color="black", lw=1.0, linestyle=":", label="Ideal path (X=0)")
+    ax_traj.plot(odom_x,  odom_y,  lw=1.2, color="steelblue", label="Odometry path")
+    ax_traj.plot(fused_x, fused_y, lw=1.5, color="tomato",    linestyle="--", label="Fused path")
+    ax_traj.plot(0.0, 0.0,               "go", markersize=8, label="Start marker")
+    ax_traj.plot(0.0, DRIVE_DISTANCE_MM, "kx", markersize=10, markeredgewidth=2,
+                 label=f"End marker ({DRIVE_DISTANCE_MM:.0f} mm)")
+    ax_traj.plot(odom_x[-1],  odom_y[-1],  "bs", markersize=7, label="End (odom)")
+    ax_traj.plot(fused_x[-1], fused_y[-1], "r^", markersize=7, label="End (fused)")
+    ax_traj.set_xlim(-x_range * 1.5, x_range * 1.5)
+    ax_traj.set_xlabel("X (mm)  [should stay ≈ 0]")
+    ax_traj.set_ylabel("Y (mm)")
+    ax_traj.set_title("2D trajectory (bird's-eye)")
+    ax_traj.set_aspect("equal", adjustable="datalim")
+    ax_traj.legend(fontsize=7)
+    ax_traj.grid(True, alpha=0.3)
 
-    # ── Panel 3: 2D trajectory ────────────────────────────────────────────────
-    ax = axes[1, 0]
-    ax.plot(odom_x,  odom_y,  lw=1.2, color="steelblue", label="Odometry path")
-    ax.plot(fused_x, fused_y, lw=1.5, color="tomato", linestyle="--", label="Fused path")
-    ax.plot(odom_x[0],  odom_y[0],  "go", markersize=8, label="start")
-    ax.plot(odom_x[-1], odom_y[-1], "rs", markersize=8, label="end (odom)")
-    ax.plot(fused_x[-1], fused_y[-1], "r^", markersize=8, label="end (fused)")
-    ax.set_xlabel("X (mm)")
-    ax.set_ylabel("Y (mm)")
-    ax.set_title("2D trajectory")
-    ax.set_aspect("equal")
-    ax.legend(fontsize=8)
-    ax.grid(True, alpha=0.3)
+    # ── Panel 3 (bottom-left): X drift — should stay near zero ───────────────
+    _shade_gps_regions(ax_x, t, gps_active)
+    ax_x.axhline(0.0, color="black", lw=0.8, linestyle=":")
+    ax_x.plot(t, odom_x,  lw=1.2, color="steelblue", label="Odometry X")
+    ax_x.plot(t, fused_x, lw=1.5, color="tomato",    linestyle="--", label="Fused X")
+    ax_x.set_xlabel("time (s)")
+    ax_x.set_ylabel("X drift (mm)")
+    ax_x.set_title("X drift (should stay ≈ 0)")
+    ax_x.legend(handles=[*ax_x.get_legend_handles_labels()[0][:2], gps_patch], fontsize=8)
+    ax_x.grid(True, alpha=0.3)
 
-    # ── Panel 4: Position error magnitude ────────────────────────────────────
-    ax = axes[1, 1]
-    _shade_gps_regions(ax, t, gps_active)
-    ax.fill_between(t, error_mm, alpha=0.3, color="darkorange")
-    ax.plot(t, error_mm, lw=1.2, color="darkorange", label="|fused − odom|")
-    ax.set_xlabel("time (s)")
-    ax.set_ylabel("error (mm)")
-    ax.set_title("Fused − odometry error magnitude")
-    ax.legend(handles=[*ax.get_legend_handles_labels()[0][:1], gps_patch], fontsize=8)
-    ax.grid(True, alpha=0.3)
-
-    plt.tight_layout()
+    # ── Panel 4 (bottom-right): Fused − odometry error magnitude ─────────────
+    _shade_gps_regions(ax_err, t, gps_active)
+    ax_err.fill_between(t, error_mm, alpha=0.3, color="darkorange")
+    ax_err.plot(t, error_mm, lw=1.2, color="darkorange", label="|fused − odom|")
+    ax_err.set_xlabel("time (s)")
+    ax_err.set_ylabel("error (mm)")
+    ax_err.set_title("Fused − odometry error magnitude")
+    ax_err.legend(handles=[*ax_err.get_legend_handles_labels()[0][:1], gps_patch], fontsize=8)
+    ax_err.grid(True, alpha=0.3)
 
     try:
         plt.savefig(_PLOT_PATH, dpi=150)

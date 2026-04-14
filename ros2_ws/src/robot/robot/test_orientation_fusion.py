@@ -1,7 +1,7 @@
 """
 test_orientation_fusion.py — complementary-filter orientation test
 ==================================================================
-Drives the robot in two circles, recording odometry theta and the
+Drives the robot in a 180-degree semicircle, recording odometry theta and the
 complementary-filter (magnetometer-blended) heading at every tick.
 After the run, matplotlib plots:
   1. Trajectory — x/y path from odometry, coloured by fused-heading drift
@@ -12,9 +12,8 @@ Usage (replace the run() import in main.py, or use the dedicated launch file):
     ros2 launch robot test_orientation_fusion.launch.py
 
 Tuning parameters at the top of this file:
-    CIRCLE_RADIUS_MM  — circle radius (mm)
+    CIRCLE_RADIUS_MM  — semicircle radius (mm)
     DRIVE_SPEED_MM_S  — forward speed (mm/s)
-    NUM_LAPS          — how many full circles to complete
     FUSION_ALPHA      — complementary-filter mag weight (0 = pure odometry)
 """
 
@@ -34,12 +33,11 @@ from robot.hardware_map import DEFAULT_FSM_HZ
 
 # ── Tunable parameters ────────────────────────────────────────────────────────
 
-CIRCLE_RADIUS_MM  = 300.0    # mm — tighter circles stress heading fusion more
+CIRCLE_RADIUS_MM  = 300.0    # mm — tighter semicircle stresses heading fusion more
 DRIVE_SPEED_MM_S  = 100.0    # mm/s forward speed
-NUM_LAPS          = 2        # number of full circles to complete
 FUSION_ALPHA      = 1     # complementary-filter magnetometer weight
 
-# Derived motion command
+# Derived motion command — semicircle is half the full-circle period
 _CIRCLE_PERIOD_S  = 2.0 * math.pi * CIRCLE_RADIUS_MM / DRIVE_SPEED_MM_S
 _ANGULAR_DEG_S    = math.degrees(DRIVE_SPEED_MM_S / CIRCLE_RADIUS_MM)  # CCW positive
 
@@ -92,7 +90,7 @@ class _Record:
 
 def _drive_circle(robot: Robot, rec: _Record) -> None:
     """Command the robot to drive circles and record sensor data."""
-    total_duration = _CIRCLE_PERIOD_S * NUM_LAPS
+    total_duration = _CIRCLE_PERIOD_S / 2.0  # 180-degree semicircle
     period = 1.0 / float(DEFAULT_FSM_HZ)
 
     # ── Prerequisite: bridge must be running ─────────────────────────────────
@@ -149,7 +147,7 @@ def _drive_circle(robot: Robot, rec: _Record) -> None:
     next_tick = t_start
 
     print(
-        f"[fusion_test] Driving {NUM_LAPS} circle(s): "
+        f"[fusion_test] Driving 180° semicircle: "
         f"R={CIRCLE_RADIUS_MM:.0f} mm, v={DRIVE_SPEED_MM_S:.0f} mm/s, "
         f"ω={_ANGULAR_DEG_S:.1f}°/s, α={FUSION_ALPHA}\n"
         f"[fusion_test] Expected duration: {total_duration:.1f} s"
@@ -176,7 +174,7 @@ def _drive_circle(robot: Robot, rec: _Record) -> None:
             next_tick = time.monotonic()
 
     robot.stop()
-    print("[fusion_test] Circle complete — stopping.")
+    print("[fusion_test] Semicircle complete — stopping.")
 
 
 # =============================================================================
@@ -200,8 +198,7 @@ def _plot_results(rec: _Record) -> None:
     fig, axes = plt.subplots(1, 3, figsize=(15, 5))
     fig.suptitle(
         f"Complementary-filter fusion test  "
-        f"(α={FUSION_ALPHA}, R={CIRCLE_RADIUS_MM:.0f} mm, "
-        f"{NUM_LAPS} lap{'s' if NUM_LAPS != 1 else ''})",
+        f"(α={FUSION_ALPHA}, R={CIRCLE_RADIUS_MM:.0f} mm, 180° semicircle)",
         fontsize=12,
     )
 

@@ -153,12 +153,20 @@ class Robot:
         DEFAULT_LEFT_WHEEL_MOTOR  = 1
         DEFAULT_RIGHT_WHEEL_MOTOR = 2
         INITIAL_THETA_DEG = 90.0
+        IMU_Z_DOWN        = False  (Z-axis points up, flat side of chip faces up)
+
+    If the IMU is mounted upside-down (Z-axis pointing toward the ground), set
+    IMU_Z_DOWN = True or call set_imu_z_down(True).  The Fusion AHRS on the
+    Arduino will converge to an inverted-attitude quaternion, causing the
+    extracted yaw to be negated; this flag corrects that sign flip in software.
+    The magnetometer must be re-calibrated after physically flipping the sensor.
     """
 
     WHEEL_DIAMETER_MM: float = 74.0
     WHEEL_BASE_MM:     float = 333.0
     ENCODER_PPR:       int   = 1440
     INITIAL_THETA_DEG: float = 90.0
+    IMU_Z_DOWN:        bool  = False
     DEFAULT_LEFT_WHEEL_MOTOR:  int = int(Motor.DC_M1)
     DEFAULT_RIGHT_WHEEL_MOTOR: int = int(Motor.DC_M2)
     DEFAULT_LEFT_WHEEL_DIR_INVERTED: bool = False
@@ -203,10 +211,12 @@ class Robot:
         self._servo_state: ServoStateAll = None
         self._io_output_state: IOOutputState = None
         self._imu:        SensorImu      = None
+        self._imu_z_down:         bool        = self.IMU_Z_DOWN
         self._mag_heading:        float | None = None   # absolute heading from AHRS (rad)
         self._mag_heading_offset: float      = 0.0    # mag heading at last reset_odometry()
         self._mag_accumulated:    float      = 0.0    # incrementally unwrapped relative heading (rad)
         self._mag_prev_wrapped:   float | None = None  # previous relative_mag for incremental unwrap
+        self._mag_first_sample:   bool       = True   # True until first calibrated sample is processed
         self._fused_theta:        float      = 0.0    # fusion strategy output (rad)
         self._fusion: SensorFusion           = ComplementaryFilter(alpha=0.02)
         self._pose:    tuple = (0.0, 0.0, 0.0)  # x_mm, y_mm, theta_rad (raw odometry)
@@ -218,6 +228,8 @@ class Robot:
         self._gps_timeout_s:     float       = 1.0   # seconds before GPS is treated as stale
         self._gps_offset_x_mm:   float       = 0.0   # GPS frame → arena frame translation x
         self._gps_offset_y_mm:   float       = 0.0   # GPS frame → arena frame translation y
+        self._tag_body_offset_x_mm: float    = 0.0   # tag position in robot body frame x (mm, forward)
+        self._tag_body_offset_y_mm: float    = 0.0   # tag position in robot body frame y (mm, left)
         self._fused_x_mm:        float       = 0.0   # complementary-filter x output (mm)
         self._fused_y_mm:        float       = 0.0   # complementary-filter y output (mm)
         self._pos_fusion_alpha:  float       = 0.10  # GPS weight [0 = all odometry, 1 = all GPS]
@@ -351,10 +363,14 @@ class Robot:
                 qx = float(msg.quat_x)
                 qy = float(msg.quat_y)
                 qz = float(msg.quat_z)
-                self._mag_heading = math.atan2(
+                yaw = math.atan2(
                     2.0 * (qw * qz + qx * qy),
                     1.0 - 2.0 * (qy * qy + qz * qz),
                 )
+                # When the sensor is mounted upside-down (Z toward ground) the
+                # AHRS converges to an inverted-attitude quaternion, making the
+                # extracted yaw the negative of the physical heading.
+                self._mag_heading = -yaw if self._imu_z_down else yaw
             else:
                 # Calibration lost or not yet acquired — clear the heading so
                 # _on_kinematics falls back to pure odometry rather than
@@ -388,7 +404,16 @@ class Robot:
                         math.cos(curr_wrapped - self._mag_prev_wrapped),
                     )
                     self._mag_accumulated += delta
-                # else: first sample after reset — _mag_accumulated stays 0
+                elif self._mag_first_sample:
+                    # Very first calibrated sample since startup: seed the
+                    # accumulator from the actual compass reading so that
+                    # relative_mag equals the true heading, not 0.
+                    # (Post-reset the accumulator is pre-seeded by
+                    # reset_odometry() and _mag_first_sample is False.)
+                    self._mag_accumulated = curr_wrapped
+                    self._mag_first_sample = False
+                # else: first sample after reset_odometry() — accumulator
+                # already holds initial_theta, leave it unchanged.
                 self._mag_prev_wrapped = curr_wrapped
                 relative_mag = self._mag_accumulated
             else:
@@ -459,8 +484,17 @@ class Robot:
                     )
                     # Update GPS state unconditionally — the warning is advisory only
                     # and must not gate the position update.
-                    self._gps_x_mm     = float(det.x) * 1000.0 + self._gps_offset_x_mm
-                    self._gps_y_mm     = float(det.y) * 1000.0 + self._gps_offset_y_mm
+                    tag_x = float(det.x) * 1000.0 + self._gps_offset_x_mm
+                    tag_y = float(det.y) * 1000.0 + self._gps_offset_y_mm
+                    # Correct for tag not being at the robot body origin.
+                    # Rotate the body-frame tag offset into arena frame and subtract
+                    # so _gps_x/y_mm reflect the robot centre, not the tag centre.
+                    cos_t = math.cos(self._fused_theta)
+                    sin_t = math.sin(self._fused_theta)
+                    bx = self._tag_body_offset_x_mm
+                    by = self._tag_body_offset_y_mm
+                    self._gps_x_mm     = tag_x - (cos_t * bx - sin_t * by)
+                    self._gps_y_mm     = tag_y - (sin_t * bx + cos_t * by)
                     self._gps_last_time = _time.monotonic()
                 # Log outside the lock so a slow or failing logger call cannot
                 # block kinematics callbacks that also acquire the lock.
@@ -551,16 +585,21 @@ class Robot:
         return self.set_state(FirmwareState.IDLE)
 
     def reset_odometry(self) -> None:
-        """Reset firmware odometry pose to (0, 0, current initial theta).
+        """Reset firmware odometry pose to (0, 0, initial_theta).
 
-        Also captures the current magnetometer heading as the new zero reference
-        so that get_fused_orientation() and get_pose()[2] both start at 0 after
-        the reset, regardless of absolute compass direction.
+        Captures the current magnetometer heading as the new zero reference and
+        initialises the relative-mag accumulator to match the firmware's
+        initial_theta so that the fusion filter sees no spurious discrepancy
+        between odometry and magnetometer immediately after reset.
+
+        After this call, get_fused_orientation() and get_pose()[2] will both
+        report initial_theta (default 90°), not 0°.
         """
         with self._lock:
             self._mag_heading_offset = self._mag_heading if self._mag_heading is not None else 0.0
-            self._mag_accumulated  = 0.0
+            self._mag_accumulated  = math.radians(self._initial_theta_deg)
             self._mag_prev_wrapped = None
+            self._mag_first_sample = False  # post-reset seeding handled above
         msg = SysOdomReset()
         msg.flags = 0
         self._odom_pub.publish(msg)
@@ -1561,6 +1600,24 @@ class Robot:
                 )
             self._fusion.alpha = max(0.0, min(1.0, float(alpha)))
 
+    def set_imu_z_down(self, z_down: bool) -> None:
+        """
+        Configure the IMU mounting orientation.
+
+        Set to True when the sensor is mounted upside-down (Z-axis pointing
+        toward the ground).  When enabled, the yaw extracted from the AHRS
+        quaternion is negated to undo the sign flip caused by the inverted
+        attitude the Fusion library converges to.
+
+        The magnetometer must be re-calibrated after physically flipping the
+        sensor; calibration data collected in one orientation is not valid in
+        the other.
+
+        Default is False (Z-axis points up, chip label visible from above).
+        """
+        with self._lock:
+            self._imu_z_down = bool(z_down)
+
     def get_fused_pose(self) -> tuple[float, float, float]:
         """
         Return the fused (x, y, theta_deg) in user units and degrees.
@@ -1602,6 +1659,26 @@ class Robot:
         with self._lock:
             self._gps_offset_x_mm = float(offset_x_mm)
             self._gps_offset_y_mm = float(offset_y_mm)
+
+    def set_tag_body_offset(self, forward_mm: float, left_mm: float) -> None:
+        """
+        Set the ArUco tag mounting offset relative to the robot body origin (mm).
+
+        If the tag is not centred on the robot's body origin, pass the tag's
+        position in the robot's local frame here so the fusion corrects for it:
+
+        - ``forward_mm`` — positive = tag is ahead of body centre.
+        - ``left_mm``    — positive = tag is to the left of body centre.
+
+        The correction is applied every time a tag detection arrives by rotating
+        the body-frame offset into the arena frame using the current fused heading
+        and subtracting it from the detected tag position.
+
+        Default is (0, 0) — tag assumed to be at the body origin.
+        """
+        with self._lock:
+            self._tag_body_offset_x_mm = float(forward_mm)
+            self._tag_body_offset_y_mm = float(left_mm)
 
     def set_pos_fusion_alpha(self, alpha: float) -> None:
         """

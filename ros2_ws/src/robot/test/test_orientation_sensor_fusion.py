@@ -728,9 +728,10 @@ class FusedPurePursuitTests(unittest.TestCase):
         )
 
     def _velocity_from_raw_odom(self, robot) -> tuple[float, float]:
-        x, y, theta_deg = robot.get_pose()
+        with robot._lock:
+            x_mm, y_mm, odom_theta_rad = robot._pose
         return self.PLANNER.compute_velocity(
-            pose=(x, y, math.radians(theta_deg)),
+            pose=(x_mm, y_mm, odom_theta_rad),
             waypoints=self.WAYPOINTS_NORTH,
             max_linear=self.MAX_V,
         )
